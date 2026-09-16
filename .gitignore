@@ -21,3 +21,11 @@ data.json
 
 # private directory
 private/
+
+# E2E testing artifacts
+e2e/results/
+e2e/test-vault/
+e2e/test-user-data/
+e2e/dist/
+test-results/
+playwright-report/
