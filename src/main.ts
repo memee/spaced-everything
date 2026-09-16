@@ -1133,7 +1133,25 @@ export default class SpacedEverythingPlugin extends Plugin {
 		}
 	}
 
-	/** Calculate the schedule, then queue metadata updates and report the review. */
+	/**
+	 * Read the note's scheduling state and delegate calculation to superMemo.
+	 *
+	 * Resolve numeric values from current frontmatter, falling back to the active
+	 * method's defaults and then 1 day / ease 2.5. The existing truthy fallback
+	 * behavior is preserved, so numeric zero also falls back to a default.
+	 *
+	 * This integration layer logs the review when enabled, queues se-interval,
+	 * se-ease, and se-last-reviewed, and displays an interval-change notice.
+	 * Queuing does not persist those updates: the caller must subsequently await
+	 * processFrontmatterQueue(). Logging and the notice precede that persistence.
+	 *
+	 * @param file - Note being reviewed
+	 * @param frontmatter - Retained caller snapshot; scheduling and logging use the fresh API callback value
+	 * @param reviewScore - Numeric score associated with the selected review option
+	 * @param nowFormatted - Review timestamp already formatted by the caller
+	 * @param activeSpacingMethod - Configuration supplying fallback interval and ease
+	 * @returns Calculated interval in days and ease factor, before queued persistence
+	 */
 	async updateInterval(file: TFile, frontmatter: any, reviewScore: number, nowFormatted: string, activeSpacingMethod: SpacingMethod): Promise<{ newInterval: number; newEaseFactor: number; }> {
 		let prevInterval = 1;
 		let prevEaseFactor = 2.5;
