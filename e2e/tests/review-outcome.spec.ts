@@ -10,6 +10,12 @@
  *   Unfruitful (q=5) → ease 2.6,  interval 2.6
  *   Ignore     (q=3) → ease 2.36, interval 2.36
  *   Fruitful   (q=1) → ease 1.96, interval 1 (reset, because q < 3)
+ *
+ * Those three cannot distinguish `prevInterval × newEase` from
+ * `prevInterval × prevEase`, because at prevInterval 1 both equal the ease.
+ * Matured.md exists for that: prevInterval 7 and prevEase 2.5 give
+ *   Unfruitful (q=5) → ease 2.6,  interval 18.2  (7 × 2.6, not 7 × 2.5 = 17.5)
+ *   Ignore     (q=3) → ease 2.36, interval 16.52 (7 × 2.36)
  */
 
 import { expect, test } from "../lib/obsidian-fixture";
@@ -25,6 +31,7 @@ import {
 	readVaultFile,
 	runCommand,
 	waitForFrontmatter,
+	waitForNotice,
 } from "../lib/test-helpers";
 
 /** Seconds since a UTC timestamp written by formatTimestamp(). */
@@ -121,6 +128,68 @@ test.describe("log review outcome", () => {
 
 		expect(fm?.["se-interval"] as number).toBeCloseTo(2.36, 4);
 		expect(fm?.["se-ease"] as number).toBeCloseTo(2.36, 4);
+	});
+
+	test("a matured interval is multiplied by the newly adjusted ease", async ({ obsidianPage }) => {
+		await openNote(obsidianPage, "Matured.md");
+
+		expect(await runCommand(obsidianPage, CMD_LOG_REVIEW_OUTCOME)).toBe(true);
+		await pickSuggestion(obsidianPage, "Unfruitful");
+
+		const fm = await waitForFrontmatter(
+			obsidianPage,
+			"Matured.md",
+			(f) => typeof f?.["se-interval"] === "number" && f["se-interval"] > 7,
+		);
+
+		// The ease is adjusted and rounded to 4dp *before* the multiplication, so
+		// this is 7 × 2.6. Multiplying by the previous ease would give 17.5, and
+		// rounding the ease afterwards would give 18.199999999999996.
+		expect(fm?.["se-interval"] as number).toBeCloseTo(18.2, 4);
+		expect(fm?.["se-ease"] as number).toBeCloseTo(2.6, 4);
+		expect(String(fm?.["se-last-reviewed"])).toMatch(ISO_UTC_RE);
+
+		// The notice reports the transition, using the interval that was stored.
+		expect(await waitForNotice(obsidianPage, "Interval updated")).toBe(
+			"Interval updated from 7 to 18.2",
+		);
+
+		// Assert on disk too: 18.2 must land as a number, not a quoted string.
+		expect(readVaultFile("Matured.md")).toContain("se-interval: 18.2");
+	});
+
+	test("Ignore on a matured interval grows it more slowly", async ({ obsidianPage }) => {
+		await openNote(obsidianPage, "Matured.md");
+
+		expect(await runCommand(obsidianPage, CMD_LOG_REVIEW_OUTCOME)).toBe(true);
+		await pickSuggestion(obsidianPage, "Ignore");
+
+		const fm = await waitForFrontmatter(
+			obsidianPage,
+			"Matured.md",
+			(f) => typeof f?.["se-interval"] === "number" && f["se-interval"] > 7,
+		);
+
+		expect(fm?.["se-interval"] as number).toBeCloseTo(16.52, 4);
+		expect(fm?.["se-ease"] as number).toBeCloseTo(2.36, 4);
+	});
+
+	test("Fruitful discards a matured interval entirely", async ({ obsidianPage }) => {
+		await openNote(obsidianPage, "Matured.md");
+
+		expect(await runCommand(obsidianPage, CMD_LOG_REVIEW_OUTCOME)).toBe(true);
+		await pickSuggestion(obsidianPage, "Fruitful");
+
+		// Seven days of accumulated spacing is thrown away, not reduced: q < 3
+		// resets the interval to 1 regardless of how large it was.
+		const fm = await waitForFrontmatter(
+			obsidianPage,
+			"Matured.md",
+			(f) => typeof f?.["se-ease"] === "number" && f["se-ease"] < 2.5,
+		);
+
+		expect(fm?.["se-interval"]).toBe(1);
+		expect(fm?.["se-ease"] as number).toBeCloseTo(1.96, 4);
 	});
 
 	test("Remove strips the review fields but leaves se-method", async ({ obsidianPage }) => {

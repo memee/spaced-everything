@@ -7,6 +7,10 @@ Chrome DevTools Protocol to run commands and inspect the results.
 
 Ported from the [notor](https://github.com/) plugin's e2e setup.
 
+For the fast, Obsidian-free half of the test suite — the SuperMemo golden vectors and
+the call contracts around them — see [`tests/`](../tests/README.md). Logic changes
+should fail there first; this suite is for what only breaks inside the real app.
+
 ## How it works
 
 ```

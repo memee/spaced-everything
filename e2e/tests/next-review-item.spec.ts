@@ -9,6 +9,7 @@
  *   Overdue.md        interval 1     reviewed 2020  → first
  *   Overdue Later.md  interval 1     reviewed 2021  → second
  *   Contextual.md     interval 1     reviewed 2022  → third
+ *   Matured.md        interval 7     reviewed 2023  → fourth (due 2023-01-08)
  *   Not Due.md        interval 3650  reviewed 2025  → excluded
  *   Plain.md          no se-interval                → excluded
  */
@@ -24,7 +25,7 @@ import {
 	waitForNotice,
 } from "../lib/test-helpers";
 
-const OVERDUE_NOTES = ["Overdue.md", "Overdue Later.md", "Contextual.md"];
+const OVERDUE_NOTES = ["Overdue.md", "Overdue Later.md", "Contextual.md", "Matured.md"];
 
 test.describe("open next review item", () => {
 	test("opens the most overdue note", async ({ obsidianPage }) => {
