@@ -4,6 +4,7 @@ import { Logger } from './logger';
 import { SpacedEverythingPluginSettings, SpacedEverythingSettingTab } from './settings';
 import { Suggester, suggester } from './suggester';
 import { FrontmatterQueue } from './frontmatterQueue';
+import { superMemo } from './scheduling';
 
 /**
  * SpacedEverythingPlugin - Main plugin orchestrator for spaced repetition in Obsidian
@@ -1133,55 +1134,23 @@ export default class SpacedEverythingPlugin extends Plugin {
 	}
 
 	/**
-	 * Calculate next review interval using SuperMemo 2.0 algorithm
-	 * 
-	 * SuperMemo 2.0 is a spaced repetition algorithm that adjusts review intervals based on
-	 * how well the user recalls information. It uses two key metrics:
-	 * 
-	 * 1. Interval: Days between reviews (grows with successful recalls)
-	 * 2. Ease Factor: Multiplier determining how fast intervals grow (personalizes to material difficulty)
-	 * 
-	 * Algorithm Behavior:
-	 * - Score 0-2 (failed recall): Reset interval to 1 day, reduce ease factor
-	 * - Score 3-5 (successful recall): Multiply interval by ease factor, adjust ease based on quality
-	 * 
-	 * The ease factor adjusts after each review to personalize the schedule:
-	 * - Perfect recall (score 5): Increases ease factor (material is easy, can space more aggressively)
-	 * - Difficult recall (score 3): Decreases ease factor (material is hard, space more conservatively)
-	 * 
-	 * Mathematical Formulas:
-	 * - newInterval = oldInterval × easeFactor (for successful reviews with score ≥ 3)
-	 * - newInterval = 1 (for failed reviews with score < 3)
-	 * - easeAdjustment = 0.1 - (5 - score) × (0.08 + (5 - score) × 0.02)
-	 * - newEaseFactor = max(1.3, oldEaseFactor + easeAdjustment)
-	 * 
-	 * The constants (0.1, 0.08, 0.02, 1.3) are from the original SuperMemo 2.0 paper by
-	 * Piotr Woźniak and were derived empirically through extensive testing.
-	 * 
-	 * @param file - The note file being reviewed
-	 * @param frontmatter - Current frontmatter (used for logging, actual values read from file)
-	 * @param reviewScore - User's quality rating (0-5, where 0=total blackout, 3=recalled with difficulty, 5=perfect recall)
-	 * @param nowFormatted - Current timestamp in configured timezone format
-	 * @param activeSpacingMethod - Spacing method configuration containing default values
-	 * @returns Object with new interval (in days) and adjusted ease factor
-	 * 
-	 * @example
-	 * ```typescript
-	 * // Successful review after 7 days with good recall (score 4)
-	 * const result = await updateInterval(file, frontmatter, 4, timestamp, method);
-	 * // result: { interval: 17.5, easeFactor: 2.5 }
-	 * // Interval grew by 2.5x, ease factor remained stable
-	 * 
-	 * // Failed review (score 1) - couldn't recall the information
-	 * const result = await updateInterval(file, frontmatter, 1, timestamp, method);
-	 * // result: { interval: 1, easeFactor: 2.18 }
-	 * // Interval reset to 1 day, ease factor reduced to make future reviews easier
-	 * 
-	 * // Perfect recall (score 5) - remembered effortlessly
-	 * const result = await updateInterval(file, frontmatter, 5, timestamp, method);
-	 * // result: { interval: 21, easeFactor: 2.6 }
-	 * // Interval grew aggressively, ease factor increased for faster future growth
-	 * ```
+	 * Read the note's scheduling state and delegate calculation to superMemo.
+	 *
+	 * Resolve numeric values from current frontmatter, falling back to the active
+	 * method's defaults and then 1 day / ease 2.5. The existing truthy fallback
+	 * behavior is preserved, so numeric zero also falls back to a default.
+	 *
+	 * This integration layer logs the review when enabled, queues se-interval,
+	 * se-ease, and se-last-reviewed, and displays an interval-change notice.
+	 * Queuing does not persist those updates: the caller must subsequently await
+	 * processFrontmatterQueue(). Logging and the notice precede that persistence.
+	 *
+	 * @param file - Note being reviewed
+	 * @param frontmatter - Retained caller snapshot; scheduling and logging use the fresh API callback value
+	 * @param reviewScore - Numeric score associated with the selected review option
+	 * @param nowFormatted - Review timestamp already formatted by the caller
+	 * @param activeSpacingMethod - Configuration supplying fallback interval and ease
+	 * @returns Calculated interval in days and ease factor, before queued persistence
 	 */
 	async updateInterval(file: TFile, frontmatter: any, reviewScore: number, nowFormatted: string, activeSpacingMethod: SpacingMethod): Promise<{ newInterval: number; newEaseFactor: number; }> {
 		let prevInterval = 1;
@@ -1194,36 +1163,9 @@ export default class SpacedEverythingPlugin extends Plugin {
 			prevInterval = Number(frontmatter['se-interval'] || activeSpacingMethod?.defaultInterval || 1);
 			prevEaseFactor = Number(frontmatter['se-ease'] || activeSpacingMethod?.defaultEaseFactor || 2.5);
 
-			// SuperMemo 2.0: Calculate ease factor adjustment based on recall quality
-			// Formula: EF' = EF + (0.1 - (5 - q) × (0.08 + (5 - q) × 0.02))
-			// where q = quality score (0-5)
-			// 
-			// Constants are from original SuperMemo 2.0 paper:
-			// - 0.1: Base ease adjustment per review
-			// - 0.08: Primary difficulty scaling factor
-			// - 0.02: Secondary difficulty scaling factor
-			// - These were empirically derived by Piotr Woźniak through extensive testing
-			//
-			// Higher scores increase ease (material is easier, intervals can grow faster)
-			// Lower scores decrease ease (material is harder, intervals should grow slower)
-			newEaseFactor = prevEaseFactor + (0.1 - (5 - reviewScore) * (0.08 + (5 - reviewScore) * 0.02));
-			
-			// SuperMemo 2.0: Minimum ease factor is 1.3 to prevent intervals from shrinking too much
-			// This ensures intervals always grow at least 30% on successful reviews
-			newEaseFactor = Math.max(1.3, parseFloat(newEaseFactor.toFixed(4)));
-
-			// SuperMemo 2.0: Calculate new interval by multiplying previous interval by ease factor
-			// This exponential growth is the core of spaced repetition - successful reviews lead to
-			// progressively longer intervals, optimizing for long-term retention
-			newInterval = Math.max(1, prevInterval * newEaseFactor);
-			newInterval = parseFloat(newInterval.toFixed(4));
-
-			// SuperMemo 2.0: Score < 3 indicates failed recall (couldn't remember the information)
-			// Reset interval to 1 day to relearn the material quickly
-			// Note: Ease factor still adjusts (decreased above) to make future reviews easier
-			if (reviewScore < 3) {
-				newInterval = 1;
-			}
+			const result = superMemo({ interval: prevInterval, easeFactor: prevEaseFactor, reviewScore });
+			newInterval = result.interval;
+			newEaseFactor = result.easeFactor;
 
 			if (this.settings.logFilePath) {
 				this.logger.log('review', file, frontmatter, reviewScore, newInterval, newEaseFactor);
