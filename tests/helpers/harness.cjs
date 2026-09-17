@@ -96,18 +96,28 @@ function createObsidianMock() {
 	}
 
 	/**
-	 * Opening a suggester is a no-op by default, so `suggester()` never resolves
-	 * and a test that reaches an unexpected prompt hangs rather than silently
-	 * picking something. Tests that *expect* a prompt install `onOpen` via
-	 * `harness.answerSuggester()`.
+	 * A suggester that nothing has been told how to answer throws.
+	 *
+	 * The alternative — leaving `open()` a no-op — means `suggester()` never
+	 * settles and `node --test` hangs indefinitely, since it applies no default
+	 * timeout. Throwing surfaces the same mistake as a named test failure. The
+	 * throw escapes the `new Promise` executor in `suggester()`, so it rejects the
+	 * awaited promise and propagates to the caller.
+	 *
+	 * Tests that expect a prompt replace this via `harness.answerSuggester()`.
 	 */
 	class SuggestModal extends Stub {
 		open() {
-			SuggestModal.onOpen?.(this);
+			SuggestModal.onOpen(this);
 		}
 		close() {}
 	}
-	SuggestModal.onOpen = null;
+	SuggestModal.onOpen = (modal) => {
+		throw new Error(
+			`Unexpected suggester prompt ${JSON.stringify(modal.promptText)} with items ` +
+			`${JSON.stringify(modal.items)}. Call harness.answerSuggester(...) to answer it.`,
+		);
+	};
 
 	class Setting {
 		constructor() {
@@ -179,7 +189,12 @@ function defaultSettings(overrides = {}) {
  * The plugin is constructed without running `onload()`: these tests exercise
  * individual methods, so registering commands and settings tabs would only add
  * Obsidian surface to fake. Collaborators the methods under test reach for
- * (`app`, `settings`, `logger`, the frontmatter queue) are supplied directly.
+ * (`app`, `settings`, `logger`, `frontmatterQueue`) are supplied directly.
+ *
+ * The recorder is installed as `plugin.frontmatterQueue`, not by overriding
+ * `queueFrontmatterUpdate()`. That keeps the real queue-facing methods in play and
+ * covers the paths that skip them: `toggleNoteContexts()` and `createNewNoteFile()`
+ * call `this.frontmatterQueue.add()` directly.
  *
  * @param {object} [options]
  * @param {Record<string, unknown>} [options.frontmatter]
@@ -225,11 +240,16 @@ function createPluginHarness({ frontmatter = {}, settings = {}, notePath = "Note
 
 	plugin.logger = { log: (...args) => logs.push(args) };
 
-	plugin.queueFrontmatterUpdate = (target, updates) => {
-		queued.push({ file: target, updates });
-	};
-	plugin.processFrontmatterQueue = async () => {
-		processedQueue.push(queued.map((entry) => entry.updates));
+	// Stand in for FrontmatterQueue itself, so plugin.queueFrontmatterUpdate() and
+	// plugin.processFrontmatterQueue() run for real and the call sites that reach
+	// past them are covered too.
+	plugin.frontmatterQueue = {
+		add: (target, updates) => {
+			queued.push({ file: target, updates });
+		},
+		process: async () => {
+			processedQueue.push(queued.map((entry) => entry.updates));
+		},
 	};
 
 	/** One entry per suggester opened: `{ promptText, items }`. */
@@ -251,8 +271,9 @@ function createPluginHarness({ frontmatter = {}, settings = {}, notePath = "Note
 		 * Every prompt that opens is appended to `harness.prompts`, so a test can
 		 * assert on what the user was offered as well as what they picked.
 		 *
-		 * `null` answers as if the user pressed Escape. An unanswered prompt throws
-		 * rather than hanging, so an unexpected extra prompt fails loudly.
+		 * `null` answers as if the user pressed Escape. Running out of answers throws,
+		 * as does a prompt opened without calling this at all, so an unexpected extra
+		 * prompt fails loudly instead of hanging the runner.
 		 */
 		answerSuggester(...choices) {
 			const remaining = [...choices];

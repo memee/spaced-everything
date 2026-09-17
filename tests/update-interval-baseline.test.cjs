@@ -203,10 +203,10 @@ test("the log line is emitted before the update is queued or announced", async (
 	const order = [];
 
 	harness.plugin.logger = { log: () => order.push("log") };
-	const queue = harness.plugin.queueFrontmatterUpdate;
-	harness.plugin.queueFrontmatterUpdate = (...args) => {
+	const add = harness.plugin.frontmatterQueue.add;
+	harness.plugin.frontmatterQueue.add = (...args) => {
 		order.push("queue");
-		return queue(...args);
+		return add(...args);
 	};
 
 	await harness.plugin.updateInterval(harness.file, {}, 5, TIMESTAMP, METHOD);
